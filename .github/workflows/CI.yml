@@ -1,0 +1,88 @@
+name: LWJGL Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+
+env:
+  AWS_DEFAULT_REGION: us-east-1
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  S3_PARAMS: --acl public-read --cache-control "public,must-revalidate,proxy-revalidate,max-age=0"
+  ANT_OPTS: -Xmx1G
+
+jobs:
+  linux:
+    name: Linux
+    runs-on: ubuntu-16.04
+    strategy:
+      fail-fast: false
+      matrix:
+        ARCH: [x64, x86] #, arm32, arm64]
+        include:
+          - ARCH: x64
+            PACKAGES: gcc-4.8 g++-4.8 gcc-4.9 g++-4.9 xorg-dev libgtk-3-dev libglu-dev libgl1-mesa-glx libx11-dev
+            NATIVE_PARAMS: -Dgcc.libpath.opengl=/usr/lib/x86_64-linux-gnu/mesa
+          - ARCH: x86
+            PACKAGES: gcc-4.8 g++-4.8 gcc-4.9 g++-4.9 xorg-dev libgtk-3-dev libglu-dev libgl1-mesa-glx libx11-dev
+            CROSS_ARCH: i386
+            CROSS_PACKAGES: libgtk-3-dev:i386 libglu-dev:i386 libgl1-mesa-glx:i386 libx11-dev:i386 libegl1-mesa-dev:1386 libxkbcommon-dev:1386 libmirclient-dev:1386
+            NATIVE_PARAMS: -Dgcc.libpath.opengl=/usr/lib/i386-linux-gnu/mesa
+              #- ARCH: arm32
+              #PACKAGES: gcc-4.8-arm-linux-gnueabihf g++-4.8-arm-linux-gnueabihf gcc-4.9-arm-linux-gnueabihf g++-4.9-arm-linux-gnueabihf libc6-dev-armhf-cross
+              #CROSS_ARCH: armhf
+              #CROSS_PACKAGES: libgtk-3-dev:armhf libglu-dev:armhf libgl1-mesa-glx:armhf libx11-dev:armhf
+              #NATIVE_PARAMS: -Dgcc.libpath.opengl=/usr/lib/arm-linux-gnueabihf/mesa
+              #- ARCH: arm64
+              #PACKAGES: gcc-4.8-aarch64-linux-gnu g++-4.8-aarch64-linux-gnu gcc-4.9-aarch64-linux-gnu g++-4.9-aarch64-linux-gnu libc6-dev-arm64-cross
+              #CROSS_ARCH: arm64
+              #CROSS_PACKAGES: libgtk-3-dev:arm64 libglu-dev:arm64 libgl1-mesa-glx:arm64 libx11-dev:arm64
+              #NATIVE_PARAMS: -Dgcc.libpath.opengl=/usr/lib/aarch64-linux-gnu/mesa
+    env:
+      JAVA_HOME: jdk8
+      LWJGL_BUILD_TYPE: nightly
+      LWJGL_BUILD_ARCH: ${{matrix.ARCH}}
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          fetch-depth: 3
+      - run: |
+          sudo apt-get update
+          sudo apt-get -yq install ${{matrix.PACKAGES}}
+          curl https://cdn.azul.com/zulu/bin/zulu8.52.0.23-ca-fx-jdk8.0.282-linux_x64.tar.gz --output jdk8.tar.gz
+          mkdir jdk8
+          tar xf jdk8.tar.gz -C jdk8 --strip-components 1
+        name: Install dependencies
+      - run: |
+          if [[ "${{matrix.ARCH}}" != "mips64" ]]
+          then
+            sudo sed -i 's/deb http/deb [arch=amd64,i386] http/' /etc/apt/sources.list
+            sudo grep "ubuntu.com/ubuntu" /etc/apt/sources.list | sudo tee /etc/apt/sources.list.d/ports.list
+            sudo sed -i 's/amd64,i386/armhf,arm64/' /etc/apt/sources.list.d/ports.list
+            sudo sed -i 's#http://.*/ubuntu#http://ports.ubuntu.com/ubuntu-ports#' /etc/apt/sources.list.d/ports.list
+          else
+            sudo apt-get -yq install gcc-5-mips64el-linux-gnuabi64 libc6-dev-mips64el-cross
+            sudo rm -rf /etc/apt/sources.list
+            sudo sh -c "echo 'deb http://deb.debian.org/debian buster main' >> /etc/apt/sources.list"
+          fi
+          sudo dpkg --add-architecture ${{matrix.CROSS_ARCH}}
+          sudo apt-get clean
+          sudo apt-get update || true
+        if: contains(matrix.ARCH, 'x64') != true
+        name: Prepare cross-compilation
+      - run: sudo apt-get -yq -f --allow-unauthenticated --no-install-suggests --no-install-recommends install ${{matrix.CROSS_PACKAGES}} -o Dpkg::Options::="--force-overwrite"
+        if: contains(matrix.ARCH, 'x64') != true
+        name: Install cross-compilation dependencies
+      - run: ant -emacs hydrate-kotlinc clean-generated generate
+        name: Hydrate generator
+      - run: ant -emacs compile
+        name: Build Java
+      - run: ant -emacs compile-native -Dgcc.version=4.8 ${{matrix.NATIVE_PARAMS}}
+        name: Build native
+      - run: ant -emacs tests
+        name: Run tests
+        if: contains(matrix.ARCH, 'x64')
+      - run: ant -emacs upload-native
+        name: Upload artifacts

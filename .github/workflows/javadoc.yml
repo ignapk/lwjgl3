@@ -1,0 +1,40 @@
+# Generates javadoc for core + all bindings and uploads it to S3.
+# The resulting javadoc is available at https://javadoc.lwjgl.org/
+name: LWJGL Javadoc generation
+
+on:
+  workflow_dispatch:
+
+env:
+  AWS_DEFAULT_REGION: us-east-1
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  S3_PARAMS: --acl public-read --cache-control "public,must-revalidate,proxy-revalidate,max-age=0"
+  ANT_OPTS: -Xmx2G
+  LWJGL_BUILD_TYPE: nightly
+
+jobs:
+  linux:
+    name: Javadoc
+    runs-on: ubuntu-16.04
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          fetch-depth: 3
+      - run: |
+          git clone https://github.com/LWJGL-CI/OculusSDK.git ../OculusSDK
+          curl https://cdn.azul.com/zulu/bin/zulu8.52.0.23-ca-fx-jdk8.0.282-linux_x64.tar.gz --output jdk8.tar.gz
+          curl https://cdn.azul.com/zulu/bin/zulu10.3+5-jdk10.0.2-linux_x64.tar.gz --output jdk10.tar.gz
+          mkdir jdk8
+          mkdir jdk10
+          tar xf jdk8.tar.gz -C jdk8 --strip-components 1
+          tar xf jdk10.tar.gz -C jdk10 --strip-components 1
+        name: Install dependencies
+      - run: JAVA_HOME=$(pwd)/jdk8 ant -emacs hydrate-kotlinc clean-generated generate
+        name: Generate bindings
+      - run: JAVA_HOME=$(pwd)/jdk8 ant -emacs compile
+        name: Build Java
+      - run: JAVA_HOME=$(pwd)/jdk10 ant -emacs javadoc
+        name: Generate javadoc
+      - run: aws s3 sync bin/javadoc s3://javadoc.lwjgl.org/ --delete
+        name: Upload javadoc to S3
